@@ -1,0 +1,19 @@
+services:
+  netmap:
+    build:
+      context: .
+      # Le réseau de build bridge n'a pas de DNS fonctionnel sur le NAS
+      network: host
+    container_name: netmap
+    # Le mode host est indispensable : le scan ARP doit voir le vrai LAN, pas le bridge Docker
+    network_mode: host
+    cap_add:
+      - NET_RAW
+      - NET_ADMIN
+    environment:
+      SCAN_INTERVAL: "300"      # secondes entre deux scans automatiques
+      PORT_SCAN: "1"            # 0 pour désactiver le test des ports courants
+      # NETWORK_CIDR: "192.168.1.0/24"   # à forcer si la détection auto se trompe d'interface
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

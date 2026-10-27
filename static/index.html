@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NetMap</title>
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #171e26; --line: #26313d; --text: #d7e0ea;
+    --muted: #7f8c99; --accent: #4fb3ff; --on: #3ecf8e; --off: #6b7682; --new: #ffb347;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+           padding: 12px 20px; border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 18px; margin: 0; letter-spacing: .5px; }
+  header h1 span { color: var(--accent); }
+  .stats { display: flex; gap: 14px; color: var(--muted); font-size: 13px; }
+  .stats b { color: var(--text); }
+  .spacer { flex: 1; }
+  button { background: var(--accent); color: #04121f; border: 0; border-radius: 6px;
+           padding: 7px 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: progress; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr) 460px; grid-template-rows: minmax(0, 1fr);
+         height: calc(100vh - 58px); }
+  /* taille fixe + overflow caché : sinon le canvas vis.js agrandit son conteneur en boucle */
+  #graph { border-right: 1px solid var(--line); min-width: 0; min-height: 0; height: 100%;
+           overflow: hidden; position: relative; }
+  aside { display: flex; flex-direction: column; min-height: 0; }
+  .toolbar { display: flex; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
+  input[type=search] { flex: 1; background: var(--panel); border: 1px solid var(--line);
+           color: var(--text); border-radius: 6px; padding: 6px 10px; }
+  label.chk { color: var(--muted); display: flex; align-items: center; gap: 4px; font-size: 13px; }
+  .list { overflow: auto; flex: 1; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted); font-weight: 500; font-size: 12px; }
+  tr { cursor: pointer; } tr:hover td { background: #1b242e; } tr.sel td { background: #1d2c3b; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+  .name { font-weight: 600; } .sub { color: var(--muted); font-size: 12px; }
+  .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  .tag { display: inline-block; background: #22303d; border-radius: 4px; padding: 0 5px;
+         margin: 2px 2px 0 0; font-size: 11px; color: #a9c4dc; }
+  .badge-new { color: var(--new); font-size: 11px; margin-left: 4px; }
+  #details { border-top: 1px solid var(--line); padding: 12px; background: var(--panel); display: none; }
+  #details input { width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text);
+                   border-radius: 6px; padding: 6px 8px; margin: 4px 0 8px; }
+  #details .row { display: flex; justify-content: space-between; gap: 8px; margin: 2px 0; }
+  #details .actions { display: flex; gap: 8px; margin-top: 8px; }
+  .ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .err { color: #ff7b7b; }
+  @media (max-width: 900px) {
+    main { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; height: auto; }
+    #graph { height: 55vh; border-right: 0; border-bottom: 1px solid var(--line); }
+    aside { height: 70vh; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Net<span>Map</span></h1>
+  <div class="stats">
+    <span>Réseau <b id="s-net">–</b></span>
+    <span>En ligne <b id="s-on">0</b> / <b id="s-total">0</b></span>
+    <span>Dernier scan <b id="s-last">–</b></span>
+    <span id="s-err" class="err"></span>
+  </div>
+  <div class="spacer"></div>
+  <button id="btn-scan">Scanner</button>
+</header>
+
+<main>
+  <div id="graph"></div>
+  <aside>
+    <div class="toolbar">
+      <input type="search" id="q" placeholder="Filtrer (IP, nom, fabricant, MAC…)">
+      <label class="chk"><input type="checkbox" id="only-on" checked> en ligne</label>
+    </div>
+    <div class="list">
+      <table>
+        <thead><tr><th>Appareil</th><th>IP / MAC</th><th>Ports</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div id="details"></div>
+  </aside>
+</main>
+
+<script>
+const ICONS = { routeur:"🛜", reseau:"🔀", mobile:"📱", ordinateur:"💻", serveur:"🖥️",
+  imprimante:"🖨️", raspberry:"🍓", iot:"💡", console:"🎮", tv:"📺", nas:"🗄️", inconnu:"❔" };
+const PORT_NAMES = { 22:"ssh",53:"dns",80:"http",443:"https",445:"smb",554:"rtsp",1883:"mqtt",
+  3389:"rdp",5000:"upnp/nas",8006:"proxmox",8080:"http-alt",8123:"home-assist.",9100:"impr.",32400:"plex" };
+const NEW_WINDOW = 24 * 3600;   // un appareil vu pour la 1re fois il y a < 24h est « nouveau »
+
+let devices = [], selected = null, status = {};
+const $ = id => document.getElementById(id);
+const nameOf = d => d.label || d.hostname || d.vendor || d.ip;
+const isNew = d => Date.now()/1000 - d.first_seen < NEW_WINDOW;
+const ago = t => { if (!t) return "–"; const s = Math.round(Date.now()/1000 - t);
+  return s < 60 ? `il y a ${s}s` : s < 3600 ? `il y a ${Math.round(s/60)} min`
+       : s < 86400 ? `il y a ${Math.round(s/3600)} h` : new Date(t*1000).toLocaleString("fr-FR"); };
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// ---------- graphe
+const nodes = new vis.DataSet(), edges = new vis.DataSet();
+const network = new vis.Network($("graph"), { nodes, edges }, {
+  physics: { solver: "forceAtlas2Based", forceAtlas2Based: { gravitationalConstant: -60, springLength: 120 },
+             stabilization: { iterations: 150 } },
+  nodes: { shape: "circle", font: { color: "#d7e0ea", size: 13, face: "system-ui" }, borderWidth: 2 },
+  edges: { color: { color: "#2f3d4b" }, width: 1.5, smooth: false },
+  interaction: { hover: true, tooltipDelay: 150 },
+});
+network.on("click", e => { if (e.nodes.length) select(e.nodes[0]); });
+
+function renderGraph(list) {
+  const gw = list.find(d => d.is_gateway);
+  const hub = gw ? gw.mac : "__lan";
+  const wanted = new Set();
+  if (!gw) { wanted.add("__lan");
+    nodes.update({ id: "__lan", label: "🌐\nLAN", shape: "circle", color: { background: "#1d2c3b", border: "#4fb3ff" } }); }
+  for (const d of list) {
+    wanted.add(d.mac);
+    const col = d.online ? (isNew(d) ? "#ffb347" : "#3ecf8e") : "#6b7682";
+    nodes.update({
+      id: d.mac, shape: "box",
+      label: `${ICONS[d.type] || "❔"}  ${nameOf(d)}\n${d.ip}`,
+      title: `${nameOf(d)}\n${d.ip} · ${d.mac}\n${d.vendor || ""}`,
+      color: { background: d.is_gateway ? "#1d2c3b" : "#171e26", border: col,
+               highlight: { background: "#22384d", border: "#4fb3ff" } },
+      font: { color: d.online ? "#d7e0ea" : "#7f8c99", multi: false },
+      margin: 8, borderWidth: d.is_gateway ? 3 : 2, mass: d.is_gateway ? 4 : 1,
+    });
+    if (d.mac !== hub) edges.update({ id: `e-${d.mac}`, from: hub, to: d.mac,
+      dashes: !d.online, color: { color: d.online ? "#2f5a45" : "#2f3d4b" } });
+  }
+  nodes.getIds().filter(id => !wanted.has(id)).forEach(id => nodes.remove(id));
+  edges.getIds().filter(id => !wanted.has(id.slice(2))).forEach(id => edges.remove(id));
+}
+
+// ---------- tableau
+function filtered() {
+  const q = $("q").value.trim().toLowerCase(), onlyOn = $("only-on").checked;
+  return devices.filter(d => (!onlyOn || d.online) &&
+    (!q || [d.ip, d.mac, d.hostname, d.vendor, d.label, d.type].join(" ").toLowerCase().includes(q)));
+}
+
+function renderTable(list) {
+  $("rows").innerHTML = list.map(d => `
+    <tr data-mac="${d.mac}" class="${d.mac === selected ? "sel" : ""}">
+      <td><span class="dot" style="background:${d.online ? "var(--on)" : "var(--off)"}"></span>
+          <span class="name">${ICONS[d.type] || "❔"} ${esc(nameOf(d))}</span>
+          ${isNew(d) ? '<span class="badge-new">nouveau</span>' : ""}
+          ${d.is_self ? '<span class="sub"> (cette machine)</span>' : ""}
+          <div class="sub">${esc(d.vendor || d.type)}</div></td>
+      <td class="mono">${d.ip}<div class="sub mono">${d.mac}</div></td>
+      <td>${d.ports.map(p => `<span class="tag">${PORT_NAMES[p] || p}</span>`).join("")}</td>
+    </tr>`).join("");
+  document.querySelectorAll("#rows tr").forEach(tr => tr.onclick = () => select(tr.dataset.mac));
+}
+
+function select(mac) {
+  selected = mac;
+  const d = devices.find(x => x.mac === mac);
+  if (!d) return;
+  network.selectNodes([mac]); network.focus(mac, { scale: 1.1, animation: true });
+  const box = $("details"); box.style.display = "block";
+  const links = d.ports.filter(p => [80, 443, 8080, 8006, 8123, 32400, 5000].includes(p))
+    .map(p => `<a href="${p === 443 || p === 8006 ? "https" : "http"}://${d.ip}:${p}" target="_blank" style="color:var(--accent)">:${p}</a>`).join(" ");
+  box.innerHTML = `
+    <div class="name">${ICONS[d.type] || "❔"} ${esc(nameOf(d))}</div>
+    <input id="lbl" placeholder="Nom personnalisé" value="${esc(d.label)}">
+    <div class="row"><span class="sub">Hôte</span><span>${esc(d.hostname || "–")}</span></div>
+    <div class="row"><span class="sub">Fabricant</span><span>${esc(d.vendor || "–")}</span></div>
+    <div class="row"><span class="sub">Type</span><span>${d.type}</span></div>
+    <div class="row"><span class="sub">Vu la 1re fois</span><span>${ago(d.first_seen)}</span></div>
+    <div class="row"><span class="sub">Vu en dernier</span><span>${ago(d.last_seen)}</span></div>
+    ${links ? `<div class="row"><span class="sub">Interfaces web</span><span>${links}</span></div>` : ""}
+    <div class="actions"><button id="save">Enregistrer</button>
+      <button class="ghost" id="forget">Oublier</button><button class="ghost" id="close">Fermer</button></div>`;
+  $("save").onclick = async () => {
+    await fetch(`/api/devices/${mac}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: $("lbl").value }) });
+    load();
+  };
+  $("forget").onclick = async () => { if (!confirm("Retirer cet appareil de l'historique ?")) return;
+    await fetch(`/api/devices/${mac}`, { method: "DELETE" }); closeDetails(); load(); };
+  $("close").onclick = closeDetails;
+  renderTable(filtered());
+}
+function closeDetails() { selected = null; $("details").style.display = "none"; network.unselectAll(); renderTable(filtered()); }
+
+// ---------- données
+async function load() {
+  [devices, status] = await Promise.all([
+    fetch("/api/devices").then(r => r.json()), fetch("/api/status").then(r => r.json())]);
+  const list = filtered();
+  renderGraph(list); renderTable(list);
+  $("s-net").textContent = status.network || "–";
+  $("s-on").textContent = devices.filter(d => d.online).length;
+  $("s-total").textContent = devices.length;
+  $("s-last").textContent = status.scanning ? "en cours…" : ago(status.last_scan);
+  $("s-err").textContent = status.error || "";
+  $("btn-scan").disabled = status.scanning;
+}
+
+$("btn-scan").onclick = async () => {
+  $("btn-scan").disabled = true;
+  await fetch("/api/scan", { method: "POST" });
+  const poll = setInterval(async () => { await load(); if (!status.scanning) clearInterval(poll); }, 1500);
+};
+$("q").oninput = $("only-on").onchange = () => { const l = filtered(); renderGraph(l); renderTable(l); };
+
+load();
+setInterval(load, 15000);
+</script>
+</body>
+</html>

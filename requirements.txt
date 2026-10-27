@@ -1,0 +1,4 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+scapy>=2.5
+mac-vendor-lookup>=0.1.12
